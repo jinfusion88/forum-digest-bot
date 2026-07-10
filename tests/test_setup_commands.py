@@ -39,6 +39,39 @@ async def test_setup_digest_channel_persists_to_db(tmp_path):
     assert cfg.digest_channel_id == 555
     assert interaction.response.sent[0][1] is True  # ephemeral
 
+async def test_setup_digest_role_persists_to_db(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    cog = SetupCog(db)
+    interaction = FakeInteraction(guild_id=1)
+    role = FakeRole(id=777)
+    await cog.digest_role.callback(cog, interaction, role)
+    cfg = await db.get_guild_config(1)
+    assert cfg.digest_role_id == 777
+    assert interaction.response.sent[0][1] is True  # ephemeral
+
+async def test_setup_newthread_channel_persists_to_db(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    cog = SetupCog(db)
+    interaction = FakeInteraction(guild_id=1)
+    channel = FakeChannel(id=333)
+    await cog.newthread_channel.callback(cog, interaction, channel)
+    cfg = await db.get_guild_config(1)
+    assert cfg.newthread_channel_id == 333
+    assert interaction.response.sent[0][1] is True  # ephemeral
+
+async def test_setup_admin_channel_persists_to_db(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    cog = SetupCog(db)
+    interaction = FakeInteraction(guild_id=1)
+    channel = FakeChannel(id=444)
+    await cog.admin_channel.callback(cog, interaction, channel)
+    cfg = await db.get_guild_config(1)
+    assert cfg.admin_channel_id == 444
+    assert interaction.response.sent[0][1] is True  # ephemeral
+
 async def test_setup_add_forum_persists_designation_timestamp(tmp_path):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
