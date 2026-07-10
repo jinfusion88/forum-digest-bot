@@ -1399,6 +1399,7 @@ async def test_manual_digest_post_behaves_same_as_scheduled(tmp_path):
     db, now = await setup_db(tmp_path)
     for uid in [1, 2, 3]:
         await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
     gateway = FakeGateway(thread_messages={1: []})
     runner = DigestRunner(db, Config(), gateway, random.Random(0))
     result = await runner.run(guild_id=1, manual=True)
