@@ -883,13 +883,15 @@ def test_truncates_to_char_budget():
     result = select_snippet(messages, char_budget=150)
     assert len(result) == 150
 
-def test_returns_none_when_nothing_qualifies():
+def test_falls_back_to_generic_string_when_nothing_qualifies():
     messages = [msg(1, "", reactions=5, minutes_ago=1, attachment_only=True)]
-    assert select_snippet(messages, char_budget=150) is None
+    assert select_snippet(messages, char_budget=150) == GENERIC_FALLBACK
 
-def test_empty_message_list_returns_none():
-    assert select_snippet([], char_budget=150) is None
+def test_empty_message_list_returns_generic_fallback():
+    assert select_snippet([], char_budget=150) == GENERIC_FALLBACK
 ```
+
+(Import `GENERIC_FALLBACK` from `snippets` at the top of the test file alongside `FakeMessage, select_snippet`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -927,7 +929,17 @@ def _most_recent_substantive(messages: list[FakeMessage]) -> FakeMessage | None:
     return max(candidates, key=lambda m: m.created_at)
 
 
-STRATEGIES = [_most_reacted, _most_recent_substantive]
+GENERIC_FALLBACK = "Join the conversation and see what it's about."
+
+
+def _generic_fallback(messages: list[FakeMessage]) -> FakeMessage | None:
+    return FakeMessage(
+        id=0, content=GENERIC_FALLBACK, author_id=0, reaction_count=0,
+        created_at=datetime.min, is_attachment_or_embed_only=False,
+    )
+
+
+STRATEGIES = [_most_reacted, _most_recent_substantive, _generic_fallback]
 
 
 def select_snippet(messages: list[FakeMessage], char_budget: int) -> str | None:
@@ -937,6 +949,10 @@ def select_snippet(messages: list[FakeMessage], char_budget: int) -> str | None:
             return chosen.content[:char_budget]
     return None
 ```
+
+The strategy chain always terminates in `_generic_fallback`, which never returns
+`None` — so `select_snippet` returns a real string (a fixed generic string if
+literally nothing else qualifies) rather than `None`, per spec.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -959,7 +975,7 @@ git commit -m "feat: add pluggable snippet-selection strategy chain"
 - Test: `tests/test_digest_format.py`
 
 **Interfaces:**
-- Produces: `@dataclass ThreadRenderData(thread_id: int, title: str, jump_url: str, starter_is_url: bool, starter_text: str, snippet: str | None, reply_count: int, participant_count: int)`, `@dataclass DigestMessage(content: str, mention_role_ids: list[int])`, `format_digest(threads: list[ThreadRenderData], role_id: int, title: str, char_limit: int = 2000) -> list[DigestMessage]`.
+- Produces: `@dataclass ThreadRenderData(thread_id: int, title: str, jump_url: str, starter_is_url: bool, starter_text: str, snippet: str | None, reply_count: int, participant_count: int)`, `@dataclass DigestMessage(content: str, mention_role_ids: list[int])`, `format_digest(threads: list[ThreadRenderData], role_id: int | None, title: str, char_limit: int = 2000) -> list[DigestMessage]`. `role_id` may be `None` when no digest role has been configured — the header is then rendered without a role ping and `mention_role_ids` stays empty.
 - Consumed by: `digest.py` (Task 8), which builds `ThreadRenderData` from live discord.py objects and passes the result's `.content`/`.mention_role_ids` into `discord.AllowedMentions(roles=[...])` when actually sending.
 
 - [ ] **Step 1: Write the failing test**
@@ -1070,16 +1086,16 @@ def _render_thread_block(thread: ThreadRenderData) -> str:
 
 def format_digest(
     threads: list[ThreadRenderData],
-    role_id: int,
+    role_id: int | None,
     title: str,
     char_limit: int = 2000,
 ) -> list[DigestMessage]:
-    header = f"<@&{role_id}> **{title}**"
+    header = f"<@&{role_id}> **{title}**" if role_id is not None else f"**{title}**"
     blocks = [_render_thread_block(t) for t in threads]
 
     messages: list[DigestMessage] = []
     current_lines = [header]
-    current_role_ids = [role_id]
+    current_role_ids = [role_id] if role_id is not None else []
     current_len = len(header)
 
     for block in blocks:
@@ -1146,6 +1162,23 @@ Replace the existing `test_no_ordinal_numbering_across_threads` test with
 
 Run: `pytest tests/test_digest_format.py -v`
 Expected: PASS (8 passed)
+
+- [ ] **Step 4c: Guard against an unset digest role**
+
+If `digest_role_id` is `None` (no role configured yet), `format_digest` must not
+render a broken `<@&None>` mention or crash — it should render the header with
+no role ping and leave `mention_role_ids` empty:
+
+```python
+def test_no_role_configured_omits_ping_and_mentions():
+    threads = [make_thread(1)]
+    result = format_digest(threads, role_id=None, title="Featured")
+    assert "<@&" not in result[0].content
+    assert result[0].mention_role_ids == []
+```
+
+Run: `pytest tests/test_digest_format.py -v`
+Expected: PASS (9 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -1415,7 +1448,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'digest'`
 
 ```python
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from config import Config
@@ -1462,9 +1495,18 @@ class DigestRunner:
             )
             return DigestResult(posted=False, message_count=0, reason="no_eligible_threads")
 
+        guild_config = await self.db.get_guild_config(guild_id)   # move this fetch up
+        window_start = guild_config.last_digest_at
+        if window_start is None:
+            forums = await self.db.get_monitored_forums(guild_id)
+            window_start = min(
+                (f.designated_at for f in forums),
+                default=now - timedelta(days=7),
+            )
+
         render_data = []
         for activity in selected:
-            messages = await self.gateway.fetch_thread_messages(activity.thread_id, since=now)
+            messages = await self.gateway.fetch_thread_messages(activity.thread_id, since=window_start)
             title, jump_url = await self.gateway.get_thread_title_and_jump_url(activity.thread_id)
             starter_is_url, starter_text = await self.gateway.get_starter_message(activity.thread_id)
             snippet = select_snippet(messages, char_budget=self.config.snippet_char_budget)
@@ -1474,7 +1516,10 @@ class DigestRunner:
                 reply_count=activity.message_count, participant_count=activity.unique_participant_count,
             ))
 
-        guild_config = await self.db.get_guild_config(guild_id)
+        if guild_config.digest_role_id is None:
+            await self.gateway.send_admin_notice(
+                guild_id, "No digest role configured - posting the digest without a role ping. Run /setup digest-role."
+            )
         messages = format_digest(render_data, role_id=guild_config.digest_role_id, title=self.config.digest_title)
         await self.gateway.send_digest_messages(guild_id, messages)
 
@@ -1486,10 +1531,50 @@ class DigestRunner:
         return DigestResult(posted=True, message_count=len(selected))
 ```
 
+Note the re-fetch window: `fetch_thread_messages` is called with `since=window_start`
+(the guild's last digest timestamp, or the earliest forum designation if no digest
+has run yet) — never `since=now`, which would always return an empty message list
+and starve `select_snippet` of any candidates. `guild_config` is fetched once, up
+front, and reused for both the window computation and the `digest_role_id` lookup
+later — there is no second `get_guild_config` call.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_digest.py -v`
 Expected: PASS (3 passed)
+
+- [ ] **Step 4b: Prove the snippet re-fetch uses the window start, not `now`**
+
+Add a gateway that honors `since` (the fake in Step 1 ignores it, which masks the
+bug of always passing `now`):
+
+```python
+async def test_digest_snippet_fetch_uses_window_start_not_now(tmp_path):
+    db, now = await setup_db(tmp_path)
+    last_digest = datetime(2026, 7, 7, tzinfo=timezone.utc)
+    await db.set_last_digest_at(1, last_digest)
+    for uid in [1, 2, 3]:
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+
+    captured_since = []
+
+    class WindowAwareGateway(FakeGateway):
+        async def fetch_thread_messages(self, thread_id, since):
+            captured_since.append(since)
+            return [FakeMessage(1, "a great snippet", 1, 5, datetime(2026, 7, 8, tzinfo=timezone.utc), False)]
+
+    gateway = WindowAwareGateway()
+    runner = DigestRunner(db, Config(), gateway, random.Random(0))
+    result = await runner.run(guild_id=1, manual=False)
+    assert result.posted is True
+    assert captured_since == [last_digest]  # window start, NOT "now"
+    sent = gateway.sent_digests[0]
+    assert any("a great snippet" in m.content for m in sent)
+```
+
+Run: `pytest tests/test_digest.py -v`
+Expected: PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -1646,6 +1731,7 @@ async def backfill_forum(
     discovered = await gateway.list_active_and_recent_archived_threads(forum_channel_id)
 
     for thread in discovered:
+        existing = await db.get_thread_activity(thread.thread_id)
         messages = await gateway.fetch_messages_since(thread.thread_id, window_start, config.backfill_message_cap)
         capped = len(messages) >= config.backfill_message_cap
 
@@ -1657,10 +1743,16 @@ async def backfill_forum(
             message_count += 1
             reaction_count += m.reaction_count
 
+        last_featured_at = existing.last_featured_at if existing else None
+        is_new_thread_boosted = existing.is_new_thread_boosted if existing else False
+        if is_new_thread_boosted:
+            message_count += config.new_thread_boost_messages
+
         activity = ThreadActivity(
             thread_id=thread.thread_id, forum_channel_id=forum_channel_id, created_at=thread.created_at,
             message_count=message_count, unique_participant_count=len(seen_participants),
-            reaction_count=reaction_count, is_new_thread_boosted=False, last_featured_at=None,
+            reaction_count=reaction_count, is_new_thread_boosted=is_new_thread_boosted,
+            last_featured_at=last_featured_at,
             counted_capped=capped,
         )
         await db.upsert_thread_activity(activity)
@@ -1668,10 +1760,50 @@ async def backfill_forum(
             await db.add_participant(thread.thread_id, user_id)
 ```
 
+`backfill_forum` recomputes `message_count`/`unique_participant_count`/`reaction_count`
+from freshly fetched messages every time it runs — including on every bot restart,
+since `reconcile_on_startup` re-backfills all monitored forums. Without reading the
+existing row first, that recompute would silently wipe `last_featured_at` (breaking
+the cooldown) and `is_new_thread_boosted` (dropping the one-time new-thread boost) on
+every restart. Reading `existing` and carrying both fields forward — and re-adding
+`new_thread_boost_messages` to the recomputed count when the boost was already
+applied — makes a restart never lose eligibility or timer state, per spec.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_backfill.py -v`
 Expected: PASS (4 passed)
+
+- [ ] **Step 4b: Prove cooldown and boost state survive a restart's re-backfill**
+
+```python
+async def test_backfill_preserves_last_featured_and_boost_across_restart(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    featured_at = now - timedelta(days=2)
+    await db.add_monitored_forum(10, guild_id=1, designated_at=now - timedelta(days=5))
+    await db.upsert_thread_activity(ThreadActivity(
+        thread_id=1, forum_channel_id=10, created_at=now - timedelta(days=4),
+        message_count=6, unique_participant_count=3, reaction_count=0,
+        is_new_thread_boosted=True, last_featured_at=featured_at, counted_capped=False,
+    ))
+    gateway = FakeBackfillGateway(
+        [DiscoveredThread(thread_id=1, created_at=now - timedelta(days=4))],
+        {1: [BackfillMessage(author_id=100, reaction_count=0)]},
+    )
+    await backfill_forum(db, gateway, guild_id=1, forum_channel_id=10, config=Config(), now=now)
+    activity = await db.get_thread_activity(1)
+    assert activity.last_featured_at == featured_at
+    assert activity.is_new_thread_boosted is True
+    # 1 fetched message + 2 boost (Config default new_thread_boost_messages)
+    assert activity.message_count == 3
+```
+
+(Import `ThreadActivity` from `db` alongside `Database` at the top of the test file.)
+
+Run: `pytest tests/test_backfill.py -v`
+Expected: PASS (5 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -2483,8 +2615,8 @@ git commit -m "feat: add /digest preview and /digest post slash commands"
 - Test: `tests/test_forum_tracking.py`
 
 **Interfaces:**
-- Consumes: `Database` (Task 2), `NewThreadAnnouncer` (Task 10), `Config` (Task 1).
-- Produces: `class ForumTrackingCog(commands.Cog)` with `on_thread_create`, `on_message`, `on_reaction_add`, `on_reaction_remove` listeners, each guarded by "is this forum monitored" checks, calling into `Database.record_message` / reaction-count updates and `NewThreadAnnouncer.register_new_thread`.
+- Consumes: `Database` (Task 2), `NewThreadAnnouncer` (Task 10), `Config` (Task 1), `apply_new_thread_boost` (Task 3).
+- Produces: `class ForumTrackingCog(commands.Cog)` with `on_thread_create`, `on_message`, `on_reaction_add`, `on_reaction_remove` listeners, each guarded by "is this forum monitored" checks, calling into `Database.record_message` / reaction-count updates and `NewThreadAnnouncer.register_new_thread`. `on_thread_create` also applies the spec's one-time new-thread score boost via `apply_new_thread_boost`, so a freshly created thread doesn't start digest eligibility from zero.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2588,9 +2720,10 @@ from datetime import datetime, timezone
 
 from discord.ext import commands
 
-from db import Database
+from db import Database, ThreadActivity
 from newthread import NewThreadAnnouncer
 from config import Config
+from scoring import apply_new_thread_boost
 
 
 class ForumTrackingCog(commands.Cog):
@@ -2612,6 +2745,16 @@ class ForumTrackingCog(commands.Cog):
             thread_id=thread.id, forum_channel_id=thread.parent_id, guild_id=thread.guild.id,
             now=now, delay_minutes=self.config.new_thread_delay_minutes,
         )
+        activity = await self.db.get_thread_activity(thread.id)
+        if activity is None:
+            activity = ThreadActivity(
+                thread_id=thread.id, forum_channel_id=thread.parent_id,
+                created_at=now, message_count=0, unique_participant_count=0,
+                reaction_count=0, is_new_thread_boosted=False,
+                last_featured_at=None, counted_capped=False,
+            )
+        activity = apply_new_thread_boost(activity, self.config.new_thread_boost_messages)
+        await self.db.upsert_thread_activity(activity)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -2629,10 +2772,41 @@ class ForumTrackingCog(commands.Cog):
         )
 ```
 
+`apply_new_thread_boost` (Task 3) was previously only unit-tested in isolation and
+never called from anywhere in the live-event path — the spec's "new threads get a
+one-time configurable score boost toward digest eligibility" was silently dead
+code. Calling it here, right after registering the new-thread announcement, wires
+it in: a freshly created thread gets a `ThreadActivity` row seeded with the boost
+applied on its very first `on_thread_create` firing.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_forum_tracking.py -v`
 Expected: PASS (4 passed)
+
+- [ ] **Step 4b: Prove the boost is actually applied on thread creation**
+
+```python
+async def test_on_thread_create_applies_score_boost(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    await db.add_monitored_forum(10, guild_id=1, designated_at=now)
+    announcer = FakeAnnouncer()
+    cog = ForumTrackingCog(db, announcer, Config())
+    thread = FakeThread(id=100, parent_id=10)
+    await cog.on_thread_create(thread)
+    activity = await db.get_thread_activity(100)
+    assert activity.message_count == 2  # Config default new_thread_boost_messages
+    assert activity.is_new_thread_boosted is True
+```
+
+Also re-run `test_on_thread_create_ignores_unmonitored_forum` — it must still pass
+unchanged (no `ThreadActivity` row is created for a thread in an unmonitored forum,
+since the function returns before reaching the boost logic).
+
+Run: `pytest tests/test_forum_tracking.py -v`
+Expected: PASS (5 passed)
 
 - [ ] **Step 5: Commit**
 
