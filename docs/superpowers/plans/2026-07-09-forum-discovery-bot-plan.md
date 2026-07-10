@@ -1882,7 +1882,7 @@ git commit -m "feat: add new-thread announcement lifecycle with staleness cap an
 
 **Interfaces:**
 - Consumes: `discord.py` objects (`discord.Thread`, `discord.Message`, `discord.ForumChannel`, `discord.Client`), `FakeMessage`/`BackfillMessage` types from Tasks 4/9, the `DiscordGateway`/`BackfillGateway`/`NewThreadGateway` protocols from Tasks 8/9/10.
-- Produces: `class RealDiscordGateway` implementing all three protocols against a live `discord.Client`, using real discord.py API calls (`thread.history()`, `thread.fetch_message()`, `channel.threads`, `channel.archived_threads()`, `channel.send(..., allowed_mentions=...)`).
+- Produces: `class RealDiscordGateway` implementing all three protocols against a live `discord.Client`, using real discord.py API calls (`thread.history()`, `thread.fetch_message()`, `channel.threads`, `channel.archived_threads()`, `channel.send(..., allowed_mentions=...)`). Channel lookups always fall back to `fetch_channel` on a cache miss (`get_channel(...) or await fetch_channel(...)`) rather than risking a `None` channel. Digest mention sanitization is factored into a static, directly-testable helper `_build_digest_allowed_mentions(mention_role_ids) -> discord.AllowedMentions`, which explicitly sets `everyone=False, users=False` — leaving those unset defaults to "allow everyone/users" in discord.py's `AllowedMentions`, which would let a quoted member snippet's `@everyone` or arbitrary user mention re-broadcast that ping on the digest post. `send_admin_notice`/`post_new_thread_announcement` use `discord.AllowedMentions.none()`.
 - This is the one file with a hard discord.py runtime dependency for objects under test; tests build minimal stand-in objects (plain classes with the same attributes discord.py exposes: `.id`, `.content`, `.author.id`, `.reactions`, `.created_at`, `.attachments`, `.embeds`) rather than mocking the library itself.
 
 - [ ] **Step 1: Write the failing test**
@@ -1933,6 +1933,18 @@ def test_starter_message_url_detection_bare_url():
     assert RealDiscordGateway._is_bare_url("https://example.com/article") is True
     assert RealDiscordGateway._is_bare_url("check this out: https://example.com") is False
     assert RealDiscordGateway._is_bare_url("just some text") is False
+
+def test_build_digest_allowed_mentions_restricts_to_role_only():
+    mentions = RealDiscordGateway._build_digest_allowed_mentions(mention_role_ids=[555])
+    assert mentions.everyone is False
+    assert mentions.users is False
+    assert [r.id for r in mentions.roles] == [555]
+
+def test_build_digest_allowed_mentions_empty_role_list_still_suppresses_everyone_and_users():
+    mentions = RealDiscordGateway._build_digest_allowed_mentions(mention_role_ids=[])
+    assert mentions.everyone is False
+    assert mentions.users is False
+    assert mentions.roles == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1963,6 +1975,17 @@ class RealDiscordGateway:
     @staticmethod
     def _is_bare_url(text: str) -> bool:
         return bool(_URL_RE.match(text.strip()))
+
+    @staticmethod
+    def _build_digest_allowed_mentions(mention_role_ids: list[int]) -> discord.AllowedMentions:
+        # Explicit everyone=False/users=False is required: leaving these unset defaults to
+        # "allow everyone/users", which would let a quoted member snippet containing
+        # @everyone or an arbitrary user mention re-broadcast that ping on the digest post.
+        return discord.AllowedMentions(
+            roles=[discord.Object(r) for r in mention_role_ids],
+            everyone=False,
+            users=False,
+        )
 
     @staticmethod
     def _to_fake_message(message) -> FakeMessage:
@@ -2002,17 +2025,18 @@ class RealDiscordGateway:
         guild_config = await self.db.get_guild_config(guild_id)
         if guild_config.admin_channel_id is None:
             return
-        channel = self.client.get_channel(guild_config.admin_channel_id)
-        if channel is not None:
-            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        channel = self.client.get_channel(guild_config.admin_channel_id) or \
+            await self.client.fetch_channel(guild_config.admin_channel_id)
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
     async def send_digest_messages(self, guild_id: int, messages: list[DigestMessage]) -> None:
         guild_config = await self.db.get_guild_config(guild_id)
-        channel = self.client.get_channel(guild_config.digest_channel_id)
+        channel = self.client.get_channel(guild_config.digest_channel_id) or \
+            await self.client.fetch_channel(guild_config.digest_channel_id)
         for m in messages:
             await channel.send(
                 m.content,
-                allowed_mentions=discord.AllowedMentions(roles=[discord.Object(r) for r in m.mention_role_ids]),
+                allowed_mentions=self._build_digest_allowed_mentions(m.mention_role_ids),
             )
 
     # --- BackfillGateway protocol (backfill.py) ---
@@ -2046,7 +2070,8 @@ class RealDiscordGateway:
         thread = self.client.get_channel(thread_id) or await self.client.fetch_channel(thread_id)
         guild_id = thread.guild.id
         guild_config = await self.db.get_guild_config(guild_id)
-        channel = self.client.get_channel(guild_config.newthread_channel_id)
+        channel = self.client.get_channel(guild_config.newthread_channel_id) or \
+            await self.client.fetch_channel(guild_config.newthread_channel_id)
         await channel.send(
             f"New thread: **{thread.name}**\n<{thread.jump_url}>",
             allowed_mentions=discord.AllowedMentions.none(),
@@ -2056,7 +2081,7 @@ class RealDiscordGateway:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_gateway.py -v`
-Expected: PASS (4 passed)
+Expected: PASS (6 passed)
 
 - [ ] **Step 5: Commit**
 
