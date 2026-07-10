@@ -1,6 +1,6 @@
 # tests/test_backfill.py
 from datetime import datetime, timedelta, timezone
-from db import Database
+from db import Database, ThreadActivity
 from backfill import backfill_forum, DiscoveredThread, BackfillMessage
 from config import Config
 
@@ -70,3 +70,25 @@ async def test_backfill_does_not_create_pending_new_thread_announcements(tmp_pat
     gateway = FakeBackfillGateway([DiscoveredThread(thread_id=1, created_at=now - timedelta(days=2))], {1: []})
     await backfill_forum(db, gateway, guild_id=1, forum_channel_id=10, config=Config(), now=now)
     assert await db.get_unposted_announcements(guild_id=1) == []
+
+async def test_backfill_preserves_last_featured_and_boost_across_restart(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    featured_at = now - timedelta(days=2)
+    await db.add_monitored_forum(10, guild_id=1, designated_at=now - timedelta(days=5))
+    await db.upsert_thread_activity(ThreadActivity(
+        thread_id=1, forum_channel_id=10, created_at=now - timedelta(days=4),
+        message_count=6, unique_participant_count=3, reaction_count=0,
+        is_new_thread_boosted=True, last_featured_at=featured_at, counted_capped=False,
+    ))
+    gateway = FakeBackfillGateway(
+        [DiscoveredThread(thread_id=1, created_at=now - timedelta(days=4))],
+        {1: [BackfillMessage(author_id=100, reaction_count=0)]},
+    )
+    await backfill_forum(db, gateway, guild_id=1, forum_channel_id=10, config=Config(), now=now)
+    activity = await db.get_thread_activity(1)
+    assert activity.last_featured_at == featured_at
+    assert activity.is_new_thread_boosted is True
+    # 1 fetched message + 2 boost (Config default new_thread_boost_messages)
+    assert activity.message_count == 3

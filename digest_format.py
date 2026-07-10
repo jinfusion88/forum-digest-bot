@@ -33,16 +33,16 @@ def _render_thread_block(thread: ThreadRenderData) -> str:
 
 def format_digest(
     threads: list[ThreadRenderData],
-    role_id: int,
+    role_id: int | None,
     title: str,
     char_limit: int = 2000,
 ) -> list[DigestMessage]:
-    header = f"<@&{role_id}> **{title}**"
+    header = f"<@&{role_id}> **{title}**" if role_id is not None else f"**{title}**"
     blocks = [_render_thread_block(t) for t in threads]
 
     messages: list[DigestMessage] = []
     current_lines = [header]
-    current_role_ids = [role_id]
+    current_role_ids = [role_id] if role_id is not None else []
     current_len = len(header)
 
     for block in blocks:

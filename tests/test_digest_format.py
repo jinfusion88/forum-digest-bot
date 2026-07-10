@@ -64,3 +64,9 @@ def test_oversized_single_block_is_truncated_not_left_over_limit():
     result = format_digest([huge_thread], role_id=555, title="Featured", char_limit=400)
     assert len(result) == 1
     assert len(result[0].content) <= 400
+
+def test_no_role_configured_omits_ping_and_mentions():
+    threads = [make_thread(1)]
+    result = format_digest(threads, role_id=None, title="Featured")
+    assert "<@&" not in result[0].content
+    assert result[0].mention_role_ids == []

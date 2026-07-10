@@ -58,6 +58,19 @@ async def test_on_thread_create_ignores_unmonitored_forum(tmp_path):
     await cog.on_thread_create(thread)
     assert announcer.registered == []
 
+async def test_on_thread_create_applies_score_boost(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    await db.add_monitored_forum(10, guild_id=1, designated_at=now)
+    announcer = FakeAnnouncer()
+    cog = ForumTrackingCog(db, announcer, Config())
+    thread = FakeThread(id=100, parent_id=10)
+    await cog.on_thread_create(thread)
+    activity = await db.get_thread_activity(100)
+    assert activity.message_count == 2  # Config default new_thread_boost_messages
+    assert activity.is_new_thread_boosted is True
+
 async def test_on_message_records_activity_for_monitored_forum_thread(tmp_path):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()

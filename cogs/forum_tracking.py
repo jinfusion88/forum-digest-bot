@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 from discord.ext import commands
 
-from db import Database
+from db import Database, ThreadActivity
 from newthread import NewThreadAnnouncer
 from config import Config
+from scoring import apply_new_thread_boost
 
 
 class ForumTrackingCog(commands.Cog):
@@ -26,6 +27,16 @@ class ForumTrackingCog(commands.Cog):
             thread_id=thread.id, forum_channel_id=thread.parent_id, guild_id=thread.guild.id,
             now=now, delay_minutes=self.config.new_thread_delay_minutes,
         )
+        activity = await self.db.get_thread_activity(thread.id)
+        if activity is None:
+            activity = ThreadActivity(
+                thread_id=thread.id, forum_channel_id=thread.parent_id,
+                created_at=now, message_count=0, unique_participant_count=0,
+                reaction_count=0, is_new_thread_boosted=False,
+                last_featured_at=None, counted_capped=False,
+            )
+        activity = apply_new_thread_boost(activity, self.config.new_thread_boost_messages)
+        await self.db.upsert_thread_activity(activity)
 
     @commands.Cog.listener()
     async def on_message(self, message):

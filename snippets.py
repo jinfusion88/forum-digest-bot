@@ -26,7 +26,17 @@ def _most_recent_substantive(messages: list[FakeMessage]) -> FakeMessage | None:
     return max(candidates, key=lambda m: m.created_at)
 
 
-STRATEGIES = [_most_reacted, _most_recent_substantive]
+GENERIC_FALLBACK = "Join the conversation and see what it's about."
+
+
+def _generic_fallback(messages: list[FakeMessage]) -> FakeMessage | None:
+    return FakeMessage(
+        id=0, content=GENERIC_FALLBACK, author_id=0, reaction_count=0,
+        created_at=datetime.min, is_attachment_or_embed_only=False,
+    )
+
+
+STRATEGIES = [_most_reacted, _most_recent_substantive, _generic_fallback]
 
 
 def select_snippet(messages: list[FakeMessage], char_budget: int) -> str | None:

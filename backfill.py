@@ -42,6 +42,7 @@ async def backfill_forum(
     discovered = await gateway.list_active_and_recent_archived_threads(forum_channel_id)
 
     for thread in discovered:
+        existing = await db.get_thread_activity(thread.thread_id)
         messages = await gateway.fetch_messages_since(thread.thread_id, window_start, config.backfill_message_cap)
         capped = len(messages) >= config.backfill_message_cap
 
@@ -53,10 +54,16 @@ async def backfill_forum(
             message_count += 1
             reaction_count += m.reaction_count
 
+        last_featured_at = existing.last_featured_at if existing else None
+        is_new_thread_boosted = existing.is_new_thread_boosted if existing else False
+        if is_new_thread_boosted:
+            message_count += config.new_thread_boost_messages
+
         activity = ThreadActivity(
             thread_id=thread.thread_id, forum_channel_id=forum_channel_id, created_at=thread.created_at,
             message_count=message_count, unique_participant_count=len(seen_participants),
-            reaction_count=reaction_count, is_new_thread_boosted=False, last_featured_at=None,
+            reaction_count=reaction_count, is_new_thread_boosted=is_new_thread_boosted,
+            last_featured_at=last_featured_at,
             counted_capped=capped,
         )
         await db.upsert_thread_activity(activity)

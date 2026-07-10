@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from snippets import FakeMessage, select_snippet
+from snippets import FakeMessage, select_snippet, GENERIC_FALLBACK
 
 def msg(id, content, reactions=0, minutes_ago=0, attachment_only=False):
     now = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
@@ -44,9 +44,9 @@ def test_truncates_to_char_budget():
     result = select_snippet(messages, char_budget=150)
     assert len(result) == 150
 
-def test_returns_none_when_nothing_qualifies():
+def test_falls_back_to_generic_string_when_nothing_qualifies():
     messages = [msg(1, "", reactions=5, minutes_ago=1, attachment_only=True)]
-    assert select_snippet(messages, char_budget=150) is None
+    assert select_snippet(messages, char_budget=150) == GENERIC_FALLBACK
 
-def test_empty_message_list_returns_none():
-    assert select_snippet([], char_budget=150) is None
+def test_empty_message_list_returns_generic_fallback():
+    assert select_snippet([], char_budget=150) == GENERIC_FALLBACK
