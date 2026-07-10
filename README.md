@@ -98,6 +98,105 @@ docker compose up -d --build
 The SQLite database and config file live in `./data`, mounted as a volume so
 they survive container restarts and rebuilds.
 
+## Hosting on Google Cloud
+
+The bot is a long-running gateway process with a local SQLite file, so it needs
+an always-on host with a persistent disk. A Compute Engine **e2-micro** VM fits
+best — it's covered by GCP's Always Free tier (one per account, in `us-west1`,
+`us-central1`, or `us-east1`), and its boot disk persists the SQLite database
+across reboots. Cloud Run is **not** a good fit: its filesystem is ephemeral
+(the database would vanish on every restart) and scale-to-zero would disconnect
+the bot from Discord.
+
+No inbound ports are needed — the bot only makes outbound connections to
+Discord — so the default firewall is fine as-is.
+
+### 1. Create the VM
+
+Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) locally and
+authenticate, then:
+
+```bash
+gcloud auth login
+gcloud projects create your-project-id --name="forum-digest-bot"
+gcloud config set project your-project-id
+# Billing must be enabled on the project for VM creation (free tier still applies):
+# https://console.cloud.google.com/billing
+gcloud services enable compute.googleapis.com
+
+gcloud compute instances create forum-digest-bot \
+  --zone=us-central1-a \
+  --machine-type=e2-micro \
+  --image-family=debian-12 \
+  --image-project=debian-cloud \
+  --boot-disk-size=30GB
+```
+
+### 2. Install Docker on the VM
+
+```bash
+gcloud compute ssh forum-digest-bot --zone=us-central1-a
+```
+
+Then on the VM:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2 git
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+exit   # log out and back in so the docker group takes effect
+```
+
+### 3. Copy the project to the VM
+
+Either clone the repo (for a private repo, use a GitHub fine-grained personal
+access token with read-only content access as the password):
+
+```bash
+gcloud compute ssh forum-digest-bot --zone=us-central1-a
+git clone https://github.com/jinfusion88/forum-digest-bot.git
+cd forum-digest-bot
+```
+
+...or copy your local working directory up directly:
+
+```bash
+gcloud compute scp --recurse --zone=us-central1-a . forum-digest-bot:~/forum-digest-bot
+```
+
+### 4. Configure and start the bot
+
+On the VM, in the project directory:
+
+```bash
+mkdir -p data && cp config.example.yaml data/config.yaml
+echo "DISCORD_BOT_TOKEN=your-token-here" > .env
+docker compose up -d --build
+```
+
+`docker compose` reads `DISCORD_BOT_TOKEN` from the `.env` file automatically.
+The `.env` file is gitignored and never leaves the VM — don't commit it.
+
+The compose file's `restart: unless-stopped` policy plus Docker's systemd unit
+mean the bot comes back automatically after a VM reboot or crash — no extra
+setup needed.
+
+### 5. Operating the bot
+
+```bash
+docker compose logs -f            # follow the bot's logs
+docker compose restart           # restart (e.g. after editing data/config.yaml)
+git pull && docker compose up -d --build   # deploy an update
+```
+
+The SQLite database lives in `~/forum-digest-bot/data/` on the VM's persistent
+boot disk. To back it up from your local machine:
+
+```bash
+gcloud compute scp --zone=us-central1-a forum-digest-bot:~/forum-digest-bot/data/bot.db ./bot-backup.db
+```
+
 ## Testing
 
 ```bash
