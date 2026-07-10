@@ -2585,8 +2585,8 @@ class DigestCog(commands.Cog):
 
     @digest_group.command(
         name="post",
-        description="Manually post the digest now (resets the activity window and starts cooldowns — "
-                     "use /digest preview to check safely first)",
+        # Discord caps slash-command descriptions at 100 characters
+        description="Post the digest now (resets the window and starts cooldowns - try /digest preview first)",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def post(self, interaction: discord.Interaction):
