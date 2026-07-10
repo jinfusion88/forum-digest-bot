@@ -2879,6 +2879,27 @@ ENV BOT_CONFIG_PATH=/app/data/config.yaml
 CMD ["python", "bot.py"]
 ```
 
+- [ ] **Step 1b: Write `.dockerignore`**
+
+The Dockerfile's `COPY . .` would otherwise bake `.venv`, `.git`, any local
+`bot.db`, and — worst — a local `.env` containing the bot token into the
+image layers (a secret-leak vector if the image is ever pushed):
+
+```
+.git
+.venv
+__pycache__
+*.pyc
+*.db
+.env
+config.yaml
+data/
+.superpowers/
+docs/
+tests/
+.pytest_cache
+```
+
 - [ ] **Step 2: Write `docker-compose.yml`**
 
 ```yaml
