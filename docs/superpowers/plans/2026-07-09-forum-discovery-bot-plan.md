@@ -220,8 +220,8 @@ git commit -m "feat: add config loading with defaults"
 
 **Interfaces:**
 - Consumes: nothing external.
-- Produces: dataclasses `GuildConfig(guild_id: int, digest_channel_id: int|None, digest_role_id: int|None, newthread_channel_id: int|None, admin_channel_id: int|None, last_digest_at: datetime|None)`, `MonitoredForum(forum_channel_id: int, guild_id: int, designated_at: datetime)`, `ThreadActivity(thread_id: int, forum_channel_id: int, created_at: datetime, message_count: int, unique_participant_count: int, reaction_count: int, is_new_thread_boosted: bool, last_featured_at: datetime|None, counted_capped: bool)`, `PendingAnnouncement(thread_id: int, forum_channel_id: int, due_at: datetime, posted: bool)`.
-- Produces: `class Database` with async methods: `connect()`, `close()`, `get_guild_config(guild_id) -> GuildConfig`, `set_digest_channel(guild_id, channel_id)`, `set_digest_role(guild_id, role_id)`, `set_newthread_channel(guild_id, channel_id)`, `set_admin_channel(guild_id, channel_id)`, `set_last_digest_at(guild_id, when)`, `add_monitored_forum(forum_channel_id, guild_id, designated_at)`, `remove_monitored_forum(forum_channel_id)`, `get_monitored_forums(guild_id) -> list[MonitoredForum]`, `get_thread_activity(thread_id) -> ThreadActivity|None`, `upsert_thread_activity(activity: ThreadActivity)`, `add_participant(thread_id, user_id) -> bool` (returns True if newly added), `record_message(thread_id, forum_channel_id, created_at, user_id, reaction_delta=0)`, `reset_guild_activity(guild_id)` (zeroes counters, keeps `last_featured_at`), `set_last_featured(thread_id, when)`, `get_candidates(guild_id) -> list[ThreadActivity]`, `add_pending_announcement(a: PendingAnnouncement)`, `get_unposted_announcements(guild_id=None) -> list[PendingAnnouncement]`, `mark_announcement_posted(thread_id)`.
+- Produces: dataclasses `GuildConfig(guild_id: int, digest_channel_id: int|None, digest_role_id: int|None, newthread_channel_id: int|None, admin_channel_id: int|None, last_digest_at: datetime|None)`, `MonitoredForum(forum_channel_id: int, guild_id: int, designated_at: datetime)`, `ThreadActivity(thread_id: int, forum_channel_id: int, created_at: datetime, message_count: int, unique_participant_count: int, reaction_count: int, is_new_thread_boosted: bool, last_featured_at: datetime|None, counted_capped: bool)`, `PendingAnnouncement(thread_id: int, forum_channel_id: int, guild_id: int, due_at: datetime, posted: bool)`.
+- Produces: `class Database` with async methods: `connect()`, `close()`, `get_guild_config(guild_id) -> GuildConfig`, `set_digest_channel(guild_id, channel_id)`, `set_digest_role(guild_id, role_id)`, `set_newthread_channel(guild_id, channel_id)`, `set_admin_channel(guild_id, channel_id)`, `set_last_digest_at(guild_id, when)`, `add_monitored_forum(forum_channel_id, guild_id, designated_at)`, `remove_monitored_forum(forum_channel_id)`, `get_monitored_forums(guild_id) -> list[MonitoredForum]`, `get_thread_activity(thread_id) -> ThreadActivity|None`, `upsert_thread_activity(activity: ThreadActivity)`, `add_participant(thread_id, user_id) -> bool` (returns True if newly added), `record_message(thread_id, forum_channel_id, created_at, user_id, reaction_delta=0)` (a single atomic INSERT...ON CONFLICT SQL statement — no Python-side read-modify-write — so concurrent calls for the same thread never lose an increment), `reset_guild_activity(guild_id)` (zeroes counters, keeps `last_featured_at`), `set_last_featured(thread_id, when)`, `get_candidates(guild_id) -> list[ThreadActivity]`, `add_pending_announcement(a: PendingAnnouncement)`, `get_unposted_announcements(guild_id: int) -> list[PendingAnnouncement]` (scoped to the given guild, since a bot instance can be joined to more than one Discord server even though cross-server customization is out of scope), `mark_announcement_posted(thread_id)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -274,12 +274,26 @@ async def test_reset_guild_activity_clears_counters_but_keeps_last_featured(db):
 @pytest.mark.asyncio
 async def test_pending_announcement_roundtrip(db):
     due = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(thread_id=5, forum_channel_id=10, due_at=due, posted=False))
-    unposted = await db.get_unposted_announcements()
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=5, forum_channel_id=10, guild_id=999, due_at=due, posted=False)
+    )
+    unposted = await db.get_unposted_announcements(guild_id=999)
     assert len(unposted) == 1
     assert unposted[0].thread_id == 5
     await db.mark_announcement_posted(5)
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=999) == []
+
+@pytest.mark.asyncio
+async def test_get_unposted_announcements_scoped_to_guild(db):
+    due = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=1, forum_channel_id=10, guild_id=111, due_at=due, posted=False)
+    )
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=2, forum_channel_id=20, guild_id=222, due_at=due, posted=False)
+    )
+    guild_111_pending = await db.get_unposted_announcements(guild_id=111)
+    assert [a.thread_id for a in guild_111_pending] == [1]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -327,6 +341,7 @@ CREATE TABLE IF NOT EXISTS thread_participants (
 CREATE TABLE IF NOT EXISTS pending_newthread_announcements (
   thread_id INTEGER PRIMARY KEY,
   forum_channel_id INTEGER NOT NULL,
+  guild_id INTEGER NOT NULL,
   due_at TEXT NOT NULL,
   posted INTEGER NOT NULL DEFAULT 0
 );
@@ -375,6 +390,7 @@ class ThreadActivity:
 class PendingAnnouncement:
     thread_id: int
     forum_channel_id: int
+    guild_id: int
     due_at: datetime
     posted: bool
 
@@ -515,17 +531,24 @@ class Database:
 
     async def record_message(self, thread_id: int, forum_channel_id: int, created_at: datetime,
                               user_id: int, reaction_delta: int = 0):
-        activity = await self.get_thread_activity(thread_id)
-        if activity is None:
-            activity = ThreadActivity(
-                thread_id, forum_channel_id, created_at, 0, 0, 0, False, None, False
-            )
+        # add_participant's PRIMARY KEY constraint makes participant-uniqueness atomic;
+        # the INSERT...ON CONFLICT below does the counter increment in one SQL statement
+        # (not a Python read-modify-write), so two concurrent calls for the same thread
+        # can never clobber each other's message_count/reaction_count increment.
         is_new_participant = await self.add_participant(thread_id, user_id)
-        activity.message_count += 1
-        activity.reaction_count += reaction_delta
-        if is_new_participant:
-            activity.unique_participant_count += 1
-        await self.upsert_thread_activity(activity)
+        participant_increment = 1 if is_new_participant else 0
+        await self.conn.execute(
+            "INSERT INTO thread_activity (thread_id, forum_channel_id, created_at, "
+            "message_count, unique_participant_count, reaction_count, is_new_thread_boosted, "
+            "last_featured_at, counted_capped) VALUES (?, ?, ?, 1, ?, ?, 0, NULL, 0) "
+            "ON CONFLICT(thread_id) DO UPDATE SET "
+            "message_count = message_count + 1, "
+            "reaction_count = reaction_count + excluded.reaction_count, "
+            "unique_participant_count = unique_participant_count + ?",
+            (thread_id, forum_channel_id, _fmt_dt(created_at), participant_increment,
+             reaction_delta, participant_increment),
+        )
+        await self.conn.commit()
 
     async def reset_guild_activity(self, guild_id: int):
         forums = await self.get_monitored_forums(guild_id)
@@ -581,18 +604,19 @@ class Database:
     async def add_pending_announcement(self, a: PendingAnnouncement):
         await self.conn.execute(
             "INSERT OR REPLACE INTO pending_newthread_announcements "
-            "(thread_id, forum_channel_id, due_at, posted) VALUES (?,?,?,?)",
-            (a.thread_id, a.forum_channel_id, _fmt_dt(a.due_at), int(a.posted)),
+            "(thread_id, forum_channel_id, guild_id, due_at, posted) VALUES (?,?,?,?,?)",
+            (a.thread_id, a.forum_channel_id, a.guild_id, _fmt_dt(a.due_at), int(a.posted)),
         )
         await self.conn.commit()
 
-    async def get_unposted_announcements(self, guild_id: int | None = None) -> list[PendingAnnouncement]:
+    async def get_unposted_announcements(self, guild_id: int) -> list[PendingAnnouncement]:
         cur = await self.conn.execute(
-            "SELECT thread_id, forum_channel_id, due_at, posted FROM pending_newthread_announcements "
-            "WHERE posted = 0"
+            "SELECT thread_id, forum_channel_id, guild_id, due_at, posted "
+            "FROM pending_newthread_announcements WHERE posted = 0 AND guild_id = ?",
+            (guild_id,),
         )
         rows = await cur.fetchall()
-        return [PendingAnnouncement(r[0], r[1], _parse_dt(r[2]), bool(r[3])) for r in rows]
+        return [PendingAnnouncement(r[0], r[1], r[2], _parse_dt(r[3]), bool(r[4])) for r in rows]
 
     async def mark_announcement_posted(self, thread_id: int):
         await self.conn.execute(
@@ -605,7 +629,7 @@ class Database:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_db.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (6 passed)
 
 - [ ] **Step 5: Add pytest-asyncio config so `@pytest.mark.asyncio` runs without per-test markers boilerplate issues**
 
@@ -618,7 +642,7 @@ asyncio_mode = auto
 - [ ] **Step 6: Run full test suite**
 
 Run: `pytest -v`
-Expected: PASS (7 passed — Task 1 + Task 2 tests)
+Expected: PASS (8 passed — Task 1 + Task 2 tests)
 
 - [ ] **Step 7: Commit**
 
@@ -1522,7 +1546,7 @@ async def test_backfill_does_not_create_pending_new_thread_announcements(tmp_pat
     await db.add_monitored_forum(10, guild_id=1, designated_at=now - timedelta(days=1))
     gateway = FakeBackfillGateway([DiscoveredThread(thread_id=1, created_at=now - timedelta(days=2))], {1: []})
     await backfill_forum(db, gateway, guild_id=1, forum_channel_id=10, config=Config(), now=now)
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=1) == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1628,7 +1652,7 @@ class NewThreadGateway(Protocol):
     async def post_new_thread_announcement(self, forum_channel_id: int, thread_id: int) -> None: ...
     async def send_admin_notice(self, guild_id: int, text: str) -> None: ...
 ```
-- Produces: `class NewThreadAnnouncer` with `async def register_new_thread(self, thread_id: int, forum_channel_id: int, now: datetime, delay_minutes: int) -> None` and `async def process_due_announcements(self, guild_id: int, now: datetime, staleness_cap_hours: int) -> None`.
+- Produces: `class NewThreadAnnouncer` with `async def register_new_thread(self, thread_id: int, forum_channel_id: int, guild_id: int, now: datetime, delay_minutes: int) -> None` and `async def process_due_announcements(self, guild_id: int, now: datetime, staleness_cap_hours: int) -> None`. `PendingAnnouncement` now carries a required `guild_id` field (Task 2), so `register_new_thread` takes `guild_id` too, and `process_due_announcements` passes it through to `db.get_unposted_announcements(guild_id)` — a bot instance can be joined to more than one Discord server, so this queue must stay scoped per guild even though cross-server customization is out of scope.
 
 - [ ] **Step 1: Write the failing test (append to `tests/test_newthread.py`)**
 
@@ -1659,8 +1683,8 @@ async def test_register_new_thread_creates_pending_row(tmp_path):
     now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
     gateway = FakeNewThreadGateway()
     announcer = NewThreadAnnouncer(db, gateway)
-    await announcer.register_new_thread(thread_id=1, forum_channel_id=10, now=now, delay_minutes=60)
-    pending = await db.get_unposted_announcements()
+    await announcer.register_new_thread(thread_id=1, forum_channel_id=10, guild_id=1, now=now, delay_minutes=60)
+    pending = await db.get_unposted_announcements(guild_id=1)
     assert len(pending) == 1
     assert pending[0].due_at == now + timedelta(minutes=60)
 
@@ -1668,48 +1692,72 @@ async def test_process_due_announcement_posts_when_not_yet_due_is_false(tmp_path
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
     now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(1, 10, due_at=now - timedelta(minutes=1), posted=False))
+    await db.add_pending_announcement(
+        PendingAnnouncement(1, 10, guild_id=1, due_at=now - timedelta(minutes=1), posted=False)
+    )
     gateway = FakeNewThreadGateway(existing_thread_ids={1})
     announcer = NewThreadAnnouncer(db, gateway)
     await announcer.process_due_announcements(guild_id=1, now=now, staleness_cap_hours=24)
     assert gateway.posted == [(10, 1)]
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=1) == []
 
 async def test_process_due_announcement_skips_deleted_thread_silently(tmp_path):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
     now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(1, 10, due_at=now - timedelta(minutes=1), posted=False))
+    await db.add_pending_announcement(
+        PendingAnnouncement(1, 10, guild_id=1, due_at=now - timedelta(minutes=1), posted=False)
+    )
     gateway = FakeNewThreadGateway(existing_thread_ids=set())
     announcer = NewThreadAnnouncer(db, gateway)
     await announcer.process_due_announcements(guild_id=1, now=now, staleness_cap_hours=24)
     assert gateway.posted == []
     assert gateway.admin_notices == []
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=1) == []
 
 async def test_process_due_announcement_skips_and_notifies_admin_when_stale(tmp_path):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
     now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(1, 10, due_at=now - timedelta(hours=48), posted=False))
+    await db.add_pending_announcement(
+        PendingAnnouncement(1, 10, guild_id=1, due_at=now - timedelta(hours=48), posted=False)
+    )
     gateway = FakeNewThreadGateway(existing_thread_ids={1})
     announcer = NewThreadAnnouncer(db, gateway)
     await announcer.process_due_announcements(guild_id=1, now=now, staleness_cap_hours=24)
     assert gateway.posted == []
     assert len(gateway.admin_notices) == 1
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=1) == []
 
 async def test_process_due_announcement_ignores_not_yet_due_rows(tmp_path):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
     now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(1, 10, due_at=now + timedelta(minutes=30), posted=False))
+    await db.add_pending_announcement(
+        PendingAnnouncement(1, 10, guild_id=1, due_at=now + timedelta(minutes=30), posted=False)
+    )
     gateway = FakeNewThreadGateway(existing_thread_ids={1})
     announcer = NewThreadAnnouncer(db, gateway)
     await announcer.process_due_announcements(guild_id=1, now=now, staleness_cap_hours=24)
     assert gateway.posted == []
-    remaining = await db.get_unposted_announcements()
+    remaining = await db.get_unposted_announcements(guild_id=1)
     assert len(remaining) == 1
+
+async def test_process_due_announcements_scoped_to_guild(tmp_path):
+    db = Database(str(tmp_path / "t.db"))
+    await db.connect()
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
+    await db.add_pending_announcement(
+        PendingAnnouncement(1, 10, guild_id=1, due_at=now - timedelta(minutes=1), posted=False)
+    )
+    await db.add_pending_announcement(
+        PendingAnnouncement(2, 20, guild_id=2, due_at=now - timedelta(minutes=1), posted=False)
+    )
+    gateway = FakeNewThreadGateway(existing_thread_ids={1, 2})
+    announcer = NewThreadAnnouncer(db, gateway)
+    await announcer.process_due_announcements(guild_id=1, now=now, staleness_cap_hours=24)
+    assert gateway.posted == [(10, 1)]
+    assert len(await db.get_unposted_announcements(guild_id=2)) == 1
 ```
 
 Add `from datetime import datetime, timezone` import if not already present at the top of `tests/test_newthread.py`.
@@ -1737,15 +1785,18 @@ class NewThreadAnnouncer:
         self.db = db
         self.gateway = gateway
 
-    async def register_new_thread(self, thread_id: int, forum_channel_id: int, now, delay_minutes: int) -> None:
+    async def register_new_thread(self, thread_id: int, forum_channel_id: int, guild_id: int, now, delay_minutes: int) -> None:
         from datetime import timedelta
         due_at = now + timedelta(minutes=delay_minutes)
         await self.db.add_pending_announcement(
-            PendingAnnouncement(thread_id=thread_id, forum_channel_id=forum_channel_id, due_at=due_at, posted=False)
+            PendingAnnouncement(
+                thread_id=thread_id, forum_channel_id=forum_channel_id, guild_id=guild_id,
+                due_at=due_at, posted=False,
+            )
         )
 
     async def process_due_announcements(self, guild_id: int, now, staleness_cap_hours: int) -> None:
-        pending = await self.db.get_unposted_announcements()
+        pending = await self.db.get_unposted_announcements(guild_id)
         for row in pending:
             if row.due_at > now:
                 continue
@@ -1767,7 +1818,7 @@ class NewThreadAnnouncer:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_newthread.py -v`
-Expected: PASS (8 passed)
+Expected: PASS (9 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -2370,7 +2421,7 @@ class FakeAnnouncer:
     def __init__(self):
         self.registered = []
 
-    async def register_new_thread(self, thread_id, forum_channel_id, now, delay_minutes):
+    async def register_new_thread(self, thread_id, forum_channel_id, guild_id, now, delay_minutes):
         self.registered.append((thread_id, forum_channel_id))
 
 async def test_on_thread_create_registers_announcement_for_monitored_forum(tmp_path):
@@ -2453,7 +2504,7 @@ class ForumTrackingCog(commands.Cog):
             return
         now = datetime.now(timezone.utc)
         await self.announcer.register_new_thread(
-            thread_id=thread.id, forum_channel_id=thread.parent_id,
+            thread_id=thread.id, forum_channel_id=thread.parent_id, guild_id=thread.guild.id,
             now=now, delay_minutes=self.config.new_thread_delay_minutes,
         )
 
@@ -2542,13 +2593,13 @@ async def test_reconcile_resumes_pending_announcements(tmp_path):
     await db.connect()
     now = datetime(2026, 7, 9, tzinfo=timezone.utc)
     await db.add_pending_announcement(
-        PendingAnnouncement(thread_id=1, forum_channel_id=10, due_at=now - timedelta(minutes=5), posted=False)
+        PendingAnnouncement(thread_id=1, forum_channel_id=10, guild_id=1, due_at=now - timedelta(minutes=5), posted=False)
     )
     gateway = FakeGateway()
     posted = []
     gateway.post_new_thread_announcement = lambda f, t: posted.append((f, t)) or _async_noop()
     await reconcile_on_startup(db, gateway, guild_id=1, config=Config())
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=1) == []
 
 def _async_noop():
     import asyncio
