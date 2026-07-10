@@ -38,9 +38,35 @@ async def reconcile_on_startup(db: Database, gateway, guild_id: int, config: Con
 
 def build_bot(config: Config, db: Database) -> commands.Bot:
     bot = commands.Bot(command_prefix="!", intents=intents)
+    bot.scheduler = None  # guards against on_ready firing again after a reconnect
     gateway = RealDiscordGateway(bot, db)
     runner = DigestRunner(db, config, gateway, __import__("random").Random())
     announcer = NewThreadAnnouncer(db, gateway)
+
+    async def scheduled_digest_job():
+        for guild in bot.guilds:
+            try:
+                guild_config = await db.get_guild_config(guild.id)
+                if guild_config.digest_channel_id is None:
+                    await gateway.send_admin_notice(
+                        guild.id, "Scheduled digest fired but no digest channel is configured. Run /setup digest-channel."
+                    )
+                    continue
+                await runner.run(guild.id, manual=False)
+            except discord.Forbidden:
+                logger.exception("Missing permissions posting digest for guild %s", guild.id)
+                await gateway.send_admin_notice(guild.id, "Missing permissions to post the digest.")
+            except Exception:
+                logger.exception("Scheduled digest job failed for guild %s", guild.id)
+
+    async def new_thread_poll_job():
+        for guild in bot.guilds:
+            try:
+                await announcer.process_due_announcements(
+                    guild.id, datetime.now(timezone.utc), config.new_thread_staleness_cap_hours
+                )
+            except Exception:
+                logger.exception("New-thread poll job failed for guild %s", guild.id)
 
     @bot.event
     async def on_ready():
@@ -52,33 +78,17 @@ def build_bot(config: Config, db: Database) -> commands.Bot:
                 logger.exception("Startup reconciliation failed for guild %s", guild.id)
         await bot.tree.sync()
 
-        scheduler = AsyncIOScheduler()
+        # on_ready is not guaranteed to fire only once (discord.py re-fires it after some
+        # reconnects) — without this guard, a second firing would start a second
+        # concurrent scheduler, double-posting the digest and double-running the poll job.
+        if bot.scheduler is not None:
+            return
+
+        bot.scheduler = AsyncIOScheduler()
         trigger = build_digest_cron_trigger(config.digest_days, config.digest_time, config.timezone)
-
-        async def scheduled_digest_job():
-            for guild in bot.guilds:
-                guild_config = await db.get_guild_config(guild.id)
-                if guild_config.digest_channel_id is None:
-                    await gateway.send_admin_notice(
-                        guild.id, "Scheduled digest fired but no digest channel is configured. Run /setup digest-channel."
-                    )
-                    continue
-                try:
-                    await runner.run(guild.id, manual=False)
-                except discord.Forbidden:
-                    logger.exception("Missing permissions posting digest for guild %s", guild.id)
-                    await gateway.send_admin_notice(guild.id, "Missing permissions to post the digest.")
-
-        scheduler.add_job(scheduled_digest_job, trigger)
-
-        async def new_thread_poll_job():
-            for guild in bot.guilds:
-                await announcer.process_due_announcements(
-                    guild.id, datetime.now(timezone.utc), config.new_thread_staleness_cap_hours
-                )
-
-        scheduler.add_job(new_thread_poll_job, "interval", minutes=1)
-        scheduler.start()
+        bot.scheduler.add_job(scheduled_digest_job, trigger)
+        bot.scheduler.add_job(new_thread_poll_job, "interval", minutes=1)
+        bot.scheduler.start()
 
     asyncio.get_event_loop().run_until_complete(bot.add_cog(SetupCog(db)))
     asyncio.get_event_loop().run_until_complete(bot.add_cog(DigestCog(db, config, runner)))
