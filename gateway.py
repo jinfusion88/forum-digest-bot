@@ -20,6 +20,17 @@ class RealDiscordGateway:
         return bool(_URL_RE.match(text.strip()))
 
     @staticmethod
+    def _build_digest_allowed_mentions(mention_role_ids: list[int]) -> discord.AllowedMentions:
+        # Explicit everyone=False/users=False is required: leaving these unset defaults to
+        # "allow everyone/users", which would let a quoted member snippet containing
+        # @everyone or an arbitrary user mention re-broadcast that ping on the digest post.
+        return discord.AllowedMentions(
+            roles=[discord.Object(r) for r in mention_role_ids],
+            everyone=False,
+            users=False,
+        )
+
+    @staticmethod
     def _to_fake_message(message) -> FakeMessage:
         reaction_count = sum(r.count for r in message.reactions)
         is_attachment_only = not message.content.strip() and (
@@ -57,17 +68,18 @@ class RealDiscordGateway:
         guild_config = await self.db.get_guild_config(guild_id)
         if guild_config.admin_channel_id is None:
             return
-        channel = self.client.get_channel(guild_config.admin_channel_id)
-        if channel is not None:
-            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        channel = self.client.get_channel(guild_config.admin_channel_id) or \
+            await self.client.fetch_channel(guild_config.admin_channel_id)
+        await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
     async def send_digest_messages(self, guild_id: int, messages: list[DigestMessage]) -> None:
         guild_config = await self.db.get_guild_config(guild_id)
-        channel = self.client.get_channel(guild_config.digest_channel_id)
+        channel = self.client.get_channel(guild_config.digest_channel_id) or \
+            await self.client.fetch_channel(guild_config.digest_channel_id)
         for m in messages:
             await channel.send(
                 m.content,
-                allowed_mentions=discord.AllowedMentions(roles=[discord.Object(r) for r in m.mention_role_ids]),
+                allowed_mentions=self._build_digest_allowed_mentions(m.mention_role_ids),
             )
 
     # --- BackfillGateway protocol (backfill.py) ---
@@ -101,7 +113,8 @@ class RealDiscordGateway:
         thread = self.client.get_channel(thread_id) or await self.client.fetch_channel(thread_id)
         guild_id = thread.guild.id
         guild_config = await self.db.get_guild_config(guild_id)
-        channel = self.client.get_channel(guild_config.newthread_channel_id)
+        channel = self.client.get_channel(guild_config.newthread_channel_id) or \
+            await self.client.fetch_channel(guild_config.newthread_channel_id)
         await channel.send(
             f"New thread: **{thread.name}**\n<{thread.jump_url}>",
             allowed_mentions=discord.AllowedMentions.none(),

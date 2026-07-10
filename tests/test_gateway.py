@@ -43,3 +43,15 @@ def test_starter_message_url_detection_bare_url():
     assert RealDiscordGateway._is_bare_url("https://example.com/article") is True
     assert RealDiscordGateway._is_bare_url("check this out: https://example.com") is False
     assert RealDiscordGateway._is_bare_url("just some text") is False
+
+def test_build_digest_allowed_mentions_restricts_to_role_only():
+    mentions = RealDiscordGateway._build_digest_allowed_mentions(mention_role_ids=[555])
+    assert mentions.everyone is False
+    assert mentions.users is False
+    assert [r.id for r in mentions.roles] == [555]
+
+def test_build_digest_allowed_mentions_empty_role_list_still_suppresses_everyone_and_users():
+    mentions = RealDiscordGateway._build_digest_allowed_mentions(mention_role_ids=[])
+    assert mentions.everyone is False
+    assert mentions.users is False
+    assert mentions.roles == []
