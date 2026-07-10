@@ -1,0 +1,13 @@
+min_messages: 5
+min_participants: 3
+cooldown_days: 7
+new_thread_boost_messages: 2
+digest_days: ["monday", "friday"]
+digest_time: "16:00"
+timezone: "America/Chicago"
+digest_title: "Featured Discussions This Week"
+new_thread_delay_minutes: 60
+new_thread_staleness_cap_hours: 24
+backfill_message_cap: 200
+snippet_char_budget: 150
+max_featured_threads: 5
