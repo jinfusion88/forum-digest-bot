@@ -2372,6 +2372,7 @@ async def test_preview_shows_eligible_threads_without_posting_or_resetting(tmp_p
     await db.add_monitored_forum(10, guild_id=1, designated_at=now)
     for uid in [1, 2, 3]:
         await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
     gateway = FakeGateway()
     runner = DigestRunner(db, Config(), gateway, random.Random(0))
     cog = DigestCog(db, Config(), runner)
@@ -2379,7 +2380,7 @@ async def test_preview_shows_eligible_threads_without_posting_or_resetting(tmp_p
     await cog.preview.callback(cog, interaction)
     assert gateway.sent_digests == []
     activity = await db.get_thread_activity(1)
-    assert activity.message_count == 3  # untouched
+    assert activity.message_count == 6  # untouched
     assert interaction.response.sent[0][1] is True  # ephemeral
     assert "Thread 1" in interaction.response.sent[0][0]
 
@@ -2389,6 +2390,7 @@ async def test_post_command_triggers_manual_digest_and_resets_window(tmp_path):
     now = datetime(2026, 7, 9, tzinfo=timezone.utc)
     await db.add_monitored_forum(10, guild_id=1, designated_at=now)
     for uid in [1, 2, 3]:
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
         await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
     gateway = FakeGateway()
     runner = DigestRunner(db, Config(), gateway, random.Random(0))
