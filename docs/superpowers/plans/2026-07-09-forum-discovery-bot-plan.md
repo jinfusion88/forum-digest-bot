@@ -1084,11 +1084,26 @@ def format_digest(
 
     for block in blocks:
         addition_len = len(block) + 2  # blank line separator
-        if current_len + addition_len > char_limit and len(current_lines) > (1 if not messages else 0):
+
+        # Flush only once the current message already holds content beyond its
+        # anchor (the header for the first message, nothing for later ones) —
+        # never emit an anchor-only/empty message.
+        has_content_beyond_anchor = len(current_lines) > (1 if not messages else 0)
+        if current_len + addition_len > char_limit and has_content_beyond_anchor:
             messages.append(DigestMessage("\n\n".join(current_lines), current_role_ids))
             current_lines = []
             current_role_ids = []
             current_len = 0
+            addition_len = len(block)  # fresh message: no anchor, no separator yet
+
+        if current_len + addition_len > char_limit:
+            # Even alone (with whatever anchor is already committed), this block
+            # exceeds char_limit on its own — truncate so no message ever exceeds it.
+            separator_len = addition_len - len(block)
+            available = max(char_limit - current_len - separator_len, 0)
+            block = block[:available]
+            addition_len = len(block) + separator_len
+
         current_lines.append(block)
         current_len += addition_len
 
@@ -1102,6 +1117,35 @@ def format_digest(
 
 Run: `pytest tests/test_digest_format.py -v`
 Expected: PASS (7 passed)
+
+- [ ] **Step 4b: Add a test for the oversized-block edge case and fix the ordinal-numbering test**
+
+The original `test_no_ordinal_numbering_across_threads` only inspected the header
+line, not the rendered thread blocks — fix it to check the actual thread content,
+and add a test proving a single oversized block never causes a message to exceed
+`char_limit`:
+
+```python
+def test_no_ordinal_numbering_in_thread_blocks():
+    threads = [make_thread(1), make_thread(2)]
+    result = format_digest(threads, role_id=555, title="Featured")
+    full_text = "\n".join(m.content for m in result)
+    for line in full_text.split("\n"):
+        assert not line.strip().startswith(("1.", "2.", "#1", "#2"))
+
+def test_oversized_single_block_is_truncated_not_left_over_limit():
+    huge_thread = make_thread(1, snippet="x" * 3000)
+    result = format_digest([huge_thread], role_id=555, title="Featured", char_limit=400)
+    assert len(result) == 1
+    assert len(result[0].content) <= 400
+```
+
+Replace the existing `test_no_ordinal_numbering_across_threads` test with
+`test_no_ordinal_numbering_in_thread_blocks` above, and add
+`test_oversized_single_block_is_truncated_not_left_over_limit` as a new test.
+
+Run: `pytest tests/test_digest_format.py -v`
+Expected: PASS (8 passed)
 
 - [ ] **Step 5: Commit**
 
