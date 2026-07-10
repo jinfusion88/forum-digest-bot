@@ -114,14 +114,21 @@ Discord — so the default firewall is fine as-is.
 ### 1. Create the VM
 
 Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) locally and
-authenticate, then:
+authenticate. **Pick your own project ID** everywhere `PROJECT_ID` appears below —
+project IDs are globally unique across all of Google Cloud, so a generic name
+will already be taken (e.g. use `forum-digest-bot-<yourinitials>`).
+
+> **Windows note:** the `\` line continuations below are bash syntax. In
+> `cmd`/PowerShell, run each command on a single line instead.
 
 ```bash
 gcloud auth login
-gcloud projects create your-project-id --name="forum-digest-bot"
-gcloud config set project your-project-id
-# Billing must be enabled on the project for VM creation (free tier still applies):
-# https://console.cloud.google.com/billing
+gcloud projects create PROJECT_ID --name="forum-digest-bot"
+gcloud config set project PROJECT_ID
+# A billing account must be linked for VM creation (free tier still applies).
+# List accounts, then link one:
+gcloud billing accounts list
+gcloud billing projects link PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
 gcloud services enable compute.googleapis.com
 
 gcloud compute instances create forum-digest-bot \
@@ -142,8 +149,13 @@ Then on the VM:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker.io docker-compose-v2 git
+sudo apt-get install -y docker.io curl git
 sudo systemctl enable --now docker
+# Debian 12 doesn't package Compose v2 - install the official plugin binary:
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -sSL https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 sudo usermod -aG docker $USER
 exit   # log out and back in so the docker group takes effect
 ```
