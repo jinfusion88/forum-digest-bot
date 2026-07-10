@@ -37,11 +37,12 @@ def test_stats_line_is_invitational_not_competitive():
     assert "winner" not in result[0].content.lower()
     assert "#1" not in result[0].content
 
-def test_no_ordinal_numbering_across_threads():
+def test_no_ordinal_numbering_in_thread_blocks():
     threads = [make_thread(1), make_thread(2)]
     result = format_digest(threads, role_id=555, title="Featured")
     full_text = "\n".join(m.content for m in result)
-    assert "1." not in full_text.split("\n")[0]
+    for line in full_text.split("\n"):
+        assert not line.strip().startswith(("1.", "2.", "#1", "#2"))
 
 def test_splits_into_multiple_messages_when_over_char_limit():
     threads = [make_thread(i, snippet="x" * 140) for i in range(1, 6)]
@@ -57,3 +58,9 @@ def test_single_message_when_under_char_limit():
     threads = [make_thread(1)]
     result = format_digest(threads, role_id=555, title="Featured", char_limit=2000)
     assert len(result) == 1
+
+def test_oversized_single_block_is_truncated_not_left_over_limit():
+    huge_thread = make_thread(1, snippet="x" * 3000)
+    result = format_digest([huge_thread], role_id=555, title="Featured", char_limit=400)
+    assert len(result) == 1
+    assert len(result[0].content) <= 400
