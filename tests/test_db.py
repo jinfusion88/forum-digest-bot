@@ -1,3 +1,4 @@
+# tests/test_db.py
 import pytest
 from datetime import datetime, timezone
 from db import Database, GuildConfig, ThreadActivity, PendingAnnouncement
@@ -45,9 +46,23 @@ async def test_reset_guild_activity_clears_counters_but_keeps_last_featured(db):
 @pytest.mark.asyncio
 async def test_pending_announcement_roundtrip(db):
     due = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
-    await db.add_pending_announcement(PendingAnnouncement(thread_id=5, forum_channel_id=10, due_at=due, posted=False))
-    unposted = await db.get_unposted_announcements()
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=5, forum_channel_id=10, guild_id=999, due_at=due, posted=False)
+    )
+    unposted = await db.get_unposted_announcements(guild_id=999)
     assert len(unposted) == 1
     assert unposted[0].thread_id == 5
     await db.mark_announcement_posted(5)
-    assert await db.get_unposted_announcements() == []
+    assert await db.get_unposted_announcements(guild_id=999) == []
+
+@pytest.mark.asyncio
+async def test_get_unposted_announcements_scoped_to_guild(db):
+    due = datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc)
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=1, forum_channel_id=10, guild_id=111, due_at=due, posted=False)
+    )
+    await db.add_pending_announcement(
+        PendingAnnouncement(thread_id=2, forum_channel_id=20, guild_id=222, due_at=due, posted=False)
+    )
+    guild_111_pending = await db.get_unposted_announcements(guild_id=111)
+    assert [a.thread_id for a in guild_111_pending] == [1]

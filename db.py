@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS thread_participants (
 CREATE TABLE IF NOT EXISTS pending_newthread_announcements (
   thread_id INTEGER PRIMARY KEY,
   forum_channel_id INTEGER NOT NULL,
+  guild_id INTEGER NOT NULL,
   due_at TEXT NOT NULL,
   posted INTEGER NOT NULL DEFAULT 0
 );
@@ -83,6 +84,7 @@ class ThreadActivity:
 class PendingAnnouncement:
     thread_id: int
     forum_channel_id: int
+    guild_id: int
     due_at: datetime
     posted: bool
 
@@ -223,17 +225,24 @@ class Database:
 
     async def record_message(self, thread_id: int, forum_channel_id: int, created_at: datetime,
                               user_id: int, reaction_delta: int = 0):
-        activity = await self.get_thread_activity(thread_id)
-        if activity is None:
-            activity = ThreadActivity(
-                thread_id, forum_channel_id, created_at, 0, 0, 0, False, None, False
-            )
+        # add_participant's PRIMARY KEY constraint makes participant-uniqueness atomic;
+        # the INSERT...ON CONFLICT below does the counter increment in one SQL statement
+        # (not a Python read-modify-write), so two concurrent calls for the same thread
+        # can never clobber each other's message_count/reaction_count increment.
         is_new_participant = await self.add_participant(thread_id, user_id)
-        activity.message_count += 1
-        activity.reaction_count += reaction_delta
-        if is_new_participant:
-            activity.unique_participant_count += 1
-        await self.upsert_thread_activity(activity)
+        participant_increment = 1 if is_new_participant else 0
+        await self.conn.execute(
+            "INSERT INTO thread_activity (thread_id, forum_channel_id, created_at, "
+            "message_count, unique_participant_count, reaction_count, is_new_thread_boosted, "
+            "last_featured_at, counted_capped) VALUES (?, ?, ?, 1, ?, ?, 0, NULL, 0) "
+            "ON CONFLICT(thread_id) DO UPDATE SET "
+            "message_count = message_count + 1, "
+            "reaction_count = reaction_count + excluded.reaction_count, "
+            "unique_participant_count = unique_participant_count + ?",
+            (thread_id, forum_channel_id, _fmt_dt(created_at), participant_increment,
+             reaction_delta, participant_increment),
+        )
+        await self.conn.commit()
 
     async def reset_guild_activity(self, guild_id: int):
         forums = await self.get_monitored_forums(guild_id)
@@ -289,18 +298,19 @@ class Database:
     async def add_pending_announcement(self, a: PendingAnnouncement):
         await self.conn.execute(
             "INSERT OR REPLACE INTO pending_newthread_announcements "
-            "(thread_id, forum_channel_id, due_at, posted) VALUES (?,?,?,?)",
-            (a.thread_id, a.forum_channel_id, _fmt_dt(a.due_at), int(a.posted)),
+            "(thread_id, forum_channel_id, guild_id, due_at, posted) VALUES (?,?,?,?,?)",
+            (a.thread_id, a.forum_channel_id, a.guild_id, _fmt_dt(a.due_at), int(a.posted)),
         )
         await self.conn.commit()
 
-    async def get_unposted_announcements(self, guild_id: int | None = None) -> list[PendingAnnouncement]:
+    async def get_unposted_announcements(self, guild_id: int) -> list[PendingAnnouncement]:
         cur = await self.conn.execute(
-            "SELECT thread_id, forum_channel_id, due_at, posted FROM pending_newthread_announcements "
-            "WHERE posted = 0"
+            "SELECT thread_id, forum_channel_id, guild_id, due_at, posted "
+            "FROM pending_newthread_announcements WHERE posted = 0 AND guild_id = ?",
+            (guild_id,),
         )
         rows = await cur.fetchall()
-        return [PendingAnnouncement(r[0], r[1], _parse_dt(r[2]), bool(r[3])) for r in rows]
+        return [PendingAnnouncement(r[0], r[1], r[2], _parse_dt(r[3]), bool(r[4])) for r in rows]
 
     async def mark_announcement_posted(self, thread_id: int):
         await self.conn.execute(
