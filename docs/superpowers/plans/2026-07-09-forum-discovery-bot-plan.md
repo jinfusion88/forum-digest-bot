@@ -2204,8 +2204,11 @@ class RealDiscordGateway:
         guild_config = await self.db.get_guild_config(guild_id)
         channel = self.client.get_channel(guild_config.newthread_channel_id) or \
             await self.client.fetch_channel(guild_config.newthread_channel_id)
+        # The <@owner_id> mention renders as the author's clickable, highlighted name
+        # but never pings - AllowedMentions.none() disarms it (this stays a quiet post).
         await channel.send(
-            f"New thread: **{thread.name}**\n<{thread.jump_url}>",
+            f"A new thread has been created! Go check out what <@{thread.owner_id}> is "
+            f"brewing: **{thread.name}**\n{thread.jump_url}",
             allowed_mentions=discord.AllowedMentions.none(),
         )
 ```
