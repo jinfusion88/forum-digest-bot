@@ -101,3 +101,32 @@ async def test_manual_digest_post_behaves_same_as_scheduled(tmp_path):
     runner = DigestRunner(db, Config(), gateway, random.Random(0))
     result = await runner.run(guild_id=1, manual=True)
     assert result.posted is True
+
+async def test_build_messages_renders_without_any_side_effects(tmp_path):
+    db, now = await setup_db(tmp_path)
+    for uid in [1, 2, 3]:
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
+    gateway = FakeGateway(thread_messages={1: [FakeMessage(1, "great point", 1, 5, now, False)]})
+    runner = DigestRunner(db, Config(), gateway, random.Random(0))
+    selected, messages = await runner.build_messages(guild_id=1, now=now)
+    assert [a.thread_id for a in selected] == [1]
+    assert any("great point" in m.content for m in messages)
+    assert any("**Thread 1**" in m.content for m in messages)
+    # no posting, no notices, no state changes
+    assert gateway.sent_digests == []
+    assert gateway.admin_notices == []
+    activity = await db.get_thread_activity(1)
+    assert activity.message_count == 6
+    assert activity.last_featured_at is None
+    assert (await db.get_guild_config(1)).last_digest_at is None
+
+async def test_build_messages_empty_when_nothing_eligible_and_never_notifies(tmp_path):
+    db, now = await setup_db(tmp_path)
+    await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=1)  # below threshold
+    gateway = FakeGateway()
+    runner = DigestRunner(db, Config(), gateway, random.Random(0))
+    selected, messages = await runner.build_messages(guild_id=1, now=now)
+    assert selected == []
+    assert messages == []
+    assert gateway.admin_notices == []  # quiet-skip notice is run()'s job, not build's

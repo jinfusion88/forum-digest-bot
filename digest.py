@@ -31,22 +31,23 @@ class DigestRunner:
         self.gateway = gateway
         self.rng = rng
 
-    async def run(self, guild_id: int, *, manual: bool) -> DigestResult:
-        now = datetime.now(timezone.utc)
+    async def build_messages(self, guild_id: int, now: datetime):
+        """Select eligible threads and render the digest messages.
+
+        Read-only: no posting, no admin notices, no window/cooldown changes —
+        shared by the real digest (run) and the ephemeral /digest preview.
+        Returns (selected_threads, messages); both empty when nothing is eligible.
+        """
         candidates = await self.db.get_candidates(guild_id)
         selected = select_featured(
             candidates, now=now, cooldown_days=self.config.cooldown_days,
             min_messages=self.config.min_messages, min_participants=self.config.min_participants,
             max_featured=self.config.max_featured_threads, rng=self.rng,
         )
-
         if not selected:
-            await self.gateway.send_admin_notice(
-                guild_id, "No threads crossed the digest threshold this cycle."
-            )
-            return DigestResult(posted=False, message_count=0, reason="no_eligible_threads")
+            return [], []
 
-        guild_config = await self.db.get_guild_config(guild_id)   # move this fetch up
+        guild_config = await self.db.get_guild_config(guild_id)
         window_start = guild_config.last_digest_at
         if window_start is None:
             forums = await self.db.get_monitored_forums(guild_id)
@@ -67,11 +68,24 @@ class DigestRunner:
                 reply_count=activity.message_count, participant_count=activity.unique_participant_count,
             ))
 
+        messages = format_digest(render_data, role_id=guild_config.digest_role_id, title=self.config.digest_title)
+        return selected, messages
+
+    async def run(self, guild_id: int, *, manual: bool) -> DigestResult:
+        now = datetime.now(timezone.utc)
+        selected, messages = await self.build_messages(guild_id, now)
+
+        if not selected:
+            await self.gateway.send_admin_notice(
+                guild_id, "No threads crossed the digest threshold this cycle."
+            )
+            return DigestResult(posted=False, message_count=0, reason="no_eligible_threads")
+
+        guild_config = await self.db.get_guild_config(guild_id)
         if guild_config.digest_role_id is None:
             await self.gateway.send_admin_notice(
                 guild_id, "No digest role configured - posting the digest without a role ping. Run /setup digest-role."
             )
-        messages = format_digest(render_data, role_id=guild_config.digest_role_id, title=self.config.digest_title)
         await self.gateway.send_digest_messages(guild_id, messages)
 
         for activity in selected:

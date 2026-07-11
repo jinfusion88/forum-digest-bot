@@ -19,9 +19,33 @@ class DigestCog(commands.Cog):
 
     digest_group = app_commands.Group(name="digest", description="Preview or trigger the featured-discussions digest")
 
-    @digest_group.command(name="preview", description="Privately preview what the next digest would contain right now")
+    # Discord caps slash-command descriptions at 100 characters
+    @digest_group.command(
+        name="preview",
+        description="Privately render the exact digest message that would post right now (no side effects)",
+    )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def preview(self, interaction: discord.Interaction):
+        selected, messages = await self.runner.build_messages(
+            interaction.guild.id, datetime.now(timezone.utc)
+        )
+        if not selected:
+            await interaction.response.send_message("No threads are currently eligible.", ephemeral=True)
+            return
+        # The rendering includes the role-ping text; disarm it so a preview never pings.
+        disarmed = discord.AllowedMentions.none()
+        await interaction.response.send_message(
+            messages[0].content, ephemeral=True, allowed_mentions=disarmed
+        )
+        for extra in messages[1:]:
+            await interaction.followup.send(extra.content, ephemeral=True, allowed_mentions=disarmed)
+
+    @digest_group.command(
+        name="stats",
+        description="Show currently eligible threads and their activity stats (no side effects)",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def stats(self, interaction: discord.Interaction):
         candidates = await self.db.get_candidates(interaction.guild.id)
         selected = select_featured(
             candidates, now=datetime.now(timezone.utc), cooldown_days=self.config.cooldown_days,
