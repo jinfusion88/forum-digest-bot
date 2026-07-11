@@ -28,21 +28,26 @@ forum, giving the author time to edit or delete before anyone is pinged.
      @mention this role", whichever your server prefers)
 5. Use the generated URL to invite the bot to your server.
 
-## Configuration
+## Commands
 
-Runtime-configurable via slash commands (persisted in the database, no restart needed):
+All commands require the **Manage Server** permission. Responses are private
+(ephemeral) — only the person running the command sees them. Settings changed
+via `/setup` are persisted in the database immediately; no restart needed.
 
-| Command | Purpose |
+| Command | Function |
 |---|---|
-| `/setup digest-channel <#channel>` | Where the twice-weekly digest posts |
-| `/setup digest-role <@role>` | Role mentioned on digest posts |
-| `/setup newthread-channel <#channel>` | Where delayed new-thread posts go |
-| `/setup admin-channel <#channel>` | Where quiet-skip notices and warnings go |
-| `/setup add-forum <#forum>` | Start monitoring a forum channel |
+| `/setup digest-channel <#channel>` | Set the channel where the twice-weekly Featured Discussions digest posts |
+| `/setup digest-role <@role>` | Set the role mentioned (pinged) on digest posts |
+| `/setup newthread-channel <#channel>` | Set the channel for delayed, ping-free new-thread announcements |
+| `/setup admin-channel <#channel>` | Set the channel for quiet-skip notices and bot warnings |
+| `/setup add-forum <#forum>` | Start monitoring a forum channel (activity tracking begins from this moment; no retroactive announcements) |
 | `/setup remove-forum <#forum>` | Stop monitoring a forum channel |
-| `/setup show` | Display current configuration |
-| `/digest preview` | Privately preview the next digest's contents (no side effects) |
-| `/digest post` | Manually post the digest now — **this resets the activity window and starts cooldowns**, shrinking the next scheduled digest's window. Use `/digest preview` first to check safely. |
+| `/setup show` | Display the current configuration (channels, role, monitored forums) |
+| `/digest preview` | Render the exact digest message that would post right now — full formatting, snippets, and stats, with the role ping disarmed. No side effects |
+| `/digest stats` | List the currently eligible threads with their message and participant counts. No side effects |
+| `/digest post` | Post the digest immediately — **resets the activity window and starts featured-thread cooldowns**, shrinking the next scheduled digest's window. Check with `/digest preview` first |
+
+## Configuration
 
 Config-file settings (edit `config.yaml`, restart the bot to apply):
 
