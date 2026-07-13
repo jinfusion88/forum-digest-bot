@@ -79,10 +79,10 @@ async def test_preview_renders_full_digest_ephemerally_without_side_effects(tmp_
     # the exact rendered digest, sent ephemerally
     content, ephemeral, allowed_mentions = interaction.response.sent[0]
     assert ephemeral is True
-    assert "Featured Discussions This Week" in content
+    assert "Here are the Featured Discussions This Week!" in content
     assert "**Thread 1**" in content
-    assert "<https://discord.com/x/1>" in content
-    assert "6 replies from 3 members this week" in content
+    assert "Go check out what's brewing → https://discord.com/x/1" in content
+    assert "🔥 **6 replies** from **3 members** this week!" in content
     assert "<@&888>" in content  # ping text present in the rendering...
 
     # ...but disarmed: nothing may actually mention (AllowedMentions.none()

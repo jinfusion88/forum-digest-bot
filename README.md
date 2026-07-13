@@ -66,6 +66,11 @@ Config-file settings (edit `config.yaml`, restart the bot to apply):
 | `backfill_message_cap` | 200 | Max messages backfilled per thread on startup/designation |
 | `snippet_char_budget` | 150 | Max characters for a digest entry's snippet |
 | `max_featured_threads` | 5 | Max threads per digest |
+| `stats_tier_mid_replies` | 15 | Reply count where the digest stats emoji steps up to the mid tier |
+| `stats_tier_high_replies` | 25 | Reply count where the digest stats emoji steps up to the high tier |
+| `stats_emoji_low` | 🔥 | Stats emoji below the mid tier |
+| `stats_emoji_mid` | 🌩️ | Stats emoji from the mid tier up to the high tier |
+| `stats_emoji_high` | ⚡ | Stats emoji at the high tier and above |
 
 Copy `config.example.yaml` to `config.yaml` and adjust as needed.
 

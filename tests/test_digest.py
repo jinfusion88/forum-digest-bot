@@ -69,29 +69,6 @@ async def test_digest_posts_eligible_thread_and_resets_window(tmp_path):
     cfg = await db.get_guild_config(1)
     assert cfg.last_digest_at is not None
 
-async def test_digest_snippet_fetch_uses_window_start_not_now(tmp_path):
-    db, now = await setup_db(tmp_path)
-    last_digest = datetime(2026, 7, 7, tzinfo=timezone.utc)
-    await db.set_last_digest_at(1, last_digest)
-    for uid in [1, 2, 3]:
-        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
-        await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
-
-    captured_since = []
-
-    class WindowAwareGateway(FakeGateway):
-        async def fetch_thread_messages(self, thread_id, since):
-            captured_since.append(since)
-            return [FakeMessage(1, "a great snippet", 1, 5, datetime(2026, 7, 8, tzinfo=timezone.utc), False)]
-
-    gateway = WindowAwareGateway()
-    runner = DigestRunner(db, Config(), gateway, random.Random(0))
-    result = await runner.run(guild_id=1, manual=False)
-    assert result.posted is True
-    assert captured_since == [last_digest]  # window start, NOT "now"
-    sent = gateway.sent_digests[0]
-    assert any("a great snippet" in m.content for m in sent)
-
 async def test_manual_digest_post_behaves_same_as_scheduled(tmp_path):
     db, now = await setup_db(tmp_path)
     for uid in [1, 2, 3]:
@@ -107,12 +84,14 @@ async def test_build_messages_renders_without_any_side_effects(tmp_path):
     for uid in [1, 2, 3]:
         await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
         await db.record_message(thread_id=1, forum_channel_id=10, created_at=now, user_id=uid)
-    gateway = FakeGateway(thread_messages={1: [FakeMessage(1, "great point", 1, 5, now, False)]})
+    gateway = FakeGateway()
     runner = DigestRunner(db, Config(), gateway, random.Random(0))
     selected, messages = await runner.build_messages(guild_id=1, now=now)
     assert [a.thread_id for a in selected] == [1]
-    assert any("great point" in m.content for m in messages)
     assert any("**Thread 1**" in m.content for m in messages)
+    assert any("Starter excerpt" in m.content for m in messages)
+    assert any("🔥 **6 replies** from **3 members** this week!" in m.content for m in messages)
+    assert any("Go check out what's brewing" in m.content for m in messages)
     # no posting, no notices, no state changes
     assert gateway.sent_digests == []
     assert gateway.admin_notices == []

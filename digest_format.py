@@ -8,7 +8,6 @@ class ThreadRenderData:
     jump_url: str
     starter_is_url: bool
     starter_text: str
-    snippet: str | None
     reply_count: int
     participant_count: int
 
@@ -19,15 +18,34 @@ class DigestMessage:
     mention_role_ids: list[int] = field(default_factory=list)
 
 
-def _render_thread_block(thread: ThreadRenderData) -> str:
-    lines = [f"**{thread.title}**", f"<{thread.jump_url}>"]
+DEFAULT_STATS_EMOJIS = ("🔥", "🌩️", "⚡")  # (low, mid, high) activity tiers
+
+
+def _stats_emoji(reply_count: int, mid_threshold: int, high_threshold: int,
+                 emojis: tuple[str, str, str]) -> str:
+    low, mid, high = emojis
+    if reply_count >= high_threshold:
+        return high
+    if reply_count >= mid_threshold:
+        return mid
+    return low
+
+
+def _render_thread_block(thread: ThreadRenderData, mid_threshold: int,
+                         high_threshold: int, emojis: tuple[str, str, str]) -> str:
+    lines = [f"**{thread.title}**"]
     if thread.starter_is_url:
         lines.append(thread.starter_text)
     else:
         lines.append(f"> {thread.starter_text}")
-    if thread.snippet:
-        lines.append(f"> {thread.snippet}")
-    lines.append(f"_{thread.reply_count} replies from {thread.participant_count} members this week_")
+    emoji = _stats_emoji(thread.reply_count, mid_threshold, high_threshold, emojis)
+    lines.append(
+        f"{emoji} **{thread.reply_count} replies** from "
+        f"**{thread.participant_count} members** this week!"
+    )
+    # Bare thread link (no <> suppression): discord.com/channels links don't
+    # embed-unfurl; they render as a clickable inline thread chip.
+    lines.append(f"Go check out what's brewing → {thread.jump_url}")
     return "\n".join(lines)
 
 
@@ -36,9 +54,16 @@ def format_digest(
     role_id: int | None,
     title: str,
     char_limit: int = 2000,
+    stats_mid_threshold: int = 15,
+    stats_high_threshold: int = 25,
+    stats_emojis: tuple[str, str, str] = DEFAULT_STATS_EMOJIS,
 ) -> list[DigestMessage]:
-    header = f"<@&{role_id}> **{title}**" if role_id is not None else f"**{title}**"
-    blocks = [_render_thread_block(t) for t in threads]
+    mention = f"<@&{role_id}> " if role_id is not None else ""
+    header = f"{mention}Here are the {title}!"
+    blocks = [
+        _render_thread_block(t, stats_mid_threshold, stats_high_threshold, stats_emojis)
+        for t in threads
+    ]
 
     messages: list[DigestMessage] = []
     current_lines = [header]

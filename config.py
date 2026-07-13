@@ -18,6 +18,11 @@ class Config:
     backfill_message_cap: int = 200
     snippet_char_budget: int = 150
     max_featured_threads: int = 5
+    stats_tier_mid_replies: int = 15
+    stats_tier_high_replies: int = 25
+    stats_emoji_low: str = "🔥"
+    stats_emoji_mid: str = "🌩️"
+    stats_emoji_high: str = "⚡"
 
 
 def load_config(path: str) -> Config:

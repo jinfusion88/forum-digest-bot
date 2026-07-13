@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Protocol
 
 from config import Config
 from db import Database
 from scoring import select_featured
-from snippets import FakeMessage, select_snippet
+from snippets import FakeMessage
 from digest_format import ThreadRenderData, format_digest
 
 
@@ -48,27 +48,27 @@ class DigestRunner:
             return [], []
 
         guild_config = await self.db.get_guild_config(guild_id)
-        window_start = guild_config.last_digest_at
-        if window_start is None:
-            forums = await self.db.get_monitored_forums(guild_id)
-            window_start = min(
-                (f.designated_at for f in forums),
-                default=now - timedelta(days=7),
-            )
 
         render_data = []
         for activity in selected:
-            messages = await self.gateway.fetch_thread_messages(activity.thread_id, since=window_start)
             title, jump_url = await self.gateway.get_thread_title_and_jump_url(activity.thread_id)
             starter_is_url, starter_text = await self.gateway.get_starter_message(activity.thread_id)
-            snippet = select_snippet(messages, char_budget=self.config.snippet_char_budget)
             render_data.append(ThreadRenderData(
                 thread_id=activity.thread_id, title=title, jump_url=jump_url,
-                starter_is_url=starter_is_url, starter_text=starter_text, snippet=snippet,
+                starter_is_url=starter_is_url, starter_text=starter_text,
                 reply_count=activity.message_count, participant_count=activity.unique_participant_count,
             ))
 
-        messages = format_digest(render_data, role_id=guild_config.digest_role_id, title=self.config.digest_title)
+        messages = format_digest(
+            render_data, role_id=guild_config.digest_role_id, title=self.config.digest_title,
+            stats_mid_threshold=self.config.stats_tier_mid_replies,
+            stats_high_threshold=self.config.stats_tier_high_replies,
+            stats_emojis=(
+                self.config.stats_emoji_low,
+                self.config.stats_emoji_mid,
+                self.config.stats_emoji_high,
+            ),
+        )
         return selected, messages
 
     async def run(self, guild_id: int, *, manual: bool) -> DigestResult:

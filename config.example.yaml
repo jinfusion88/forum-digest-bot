@@ -11,3 +11,10 @@ new_thread_staleness_cap_hours: 24
 backfill_message_cap: 200
 snippet_char_budget: 150
 max_featured_threads: 5
+# Digest stats-line emoji tiers, by reply count:
+#   below mid -> low emoji, mid..high-1 -> mid emoji, high and up -> high emoji
+stats_tier_mid_replies: 15
+stats_tier_high_replies: 25
+stats_emoji_low: "🔥"
+stats_emoji_mid: "🌩️"
+stats_emoji_high: "⚡"
